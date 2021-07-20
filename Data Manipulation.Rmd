@@ -9,4 +9,258 @@ output: html_document
 knitr::opts_chunk$set(echo = TRUE)
 ```
 
-# Subsetting The Data
+Load the packages needed
+```{r}
+library(raster) # for dealing with spatial data
+library(dplyr) # for handy data manipulation functions
+library(tidyr) # ditto
+library(lme4) # for mixed effects models
+library(car) # for getting anova tables with significance values
+library(DHARMa) # for model criticism plots
+library(MuMIn) # for checking explanatory power of mixed effects models
+library(sjPlot) # for visualising results
+library(effects) # for extracting model effects
+library(ggplot2) # for plotting
+library(merTools) # useful for a few things, but we're using it for extracting estimates for plotting
+```
+
+Read in the data 
+
+```{r}
+diversity <- readRDS("UP-TO-DATE.rds") 
+```
+
+Create new data frame with just insect data
+
+```{r}
+insects <- droplevels(subset(diversity, Class=="Insecta")) 
+```
+
+### Correct for sampling effort across sites within a study
+
+```{r}
+studies_check <- diversity %>%
+  # filter the rows where Sampling efforts are NA
+  filter(is.na(Sampling_effort)) %>%
+  # keep only unique studies
+  distinct(SS) %>%
+  # pull the vector
+  pull(SS)
+
+diversity %>%
+  # filter the rows where studies are those that had missing sampling efforts (above)
+  filter(SS %in% studies_check) %>%
+  # drop missing levels
+  droplevels() %>%
+  # pull out the sampling efforts of these studies
+  pull(Sampling_effort)%>%
+  # summarise to check that ALL the data are NAs
+  summary()
+
+diversity <- diversity %>%
+  
+  # replace missing sampling effort values with 1
+  mutate(x = replace_na(Sampling_effort, 1)) %>%
+  
+  # group by Study
+  group_by(SS) %>%
+  
+  # check how many sampling efforts there are in each study
+  mutate(n_sample_effort = n_distinct(Sampling_effort),
+         # get the maximum sampling effort for the studies
+         
+         max_sample_effort = max(Sampling_effort)
+         ) %>%
+  
+  ungroup() %>%
+  
+  # if the study has more than one sampling effort, correct the abundance
+
+  # so if there's only one sampling effort, then create a 'dummy sampling effort' of 1 so that we don't change the abundances when we do the divisions. Otherwise, we give it the maximum sampling effort.
+  mutate(DividingEffort = ifelse(n_sample_effort == 1, 1, max_sample_effort)) %>%
+  
+  # if the diversity metric isn't sensitive to the effort, then we'll change the value to 1 too (so we won't end up changing the measurement), otherwise leave it as it is
+  mutate(DividingEffort = ifelse(Diversity_metric_is_effort_sensitive == FALSE, 1, DividingEffort)) %>%
+  
+  # now let's create the effort corrected measurement by dividing the abundances by the sampling efforts
+  mutate(Corrected_sampling_effort = Sampling_effort / max_sample_effort,
+         Effort_corrected_measurement = Measurement * Corrected_sampling_effort) 
+
+# summarise the corrected sampling efforts
+summary(diversity$Corrected_sampling_effort)
+```
+
+Test what we have done works
+```{r}
+diversity %>% 
+  # filter out the test study
+  filter(SS == "AD1_2001__Liow 1") %>% 
+  # select out the columns to check
+  dplyr::select(Measurement, Effort_corrected_measurement, Sampling_effort, Corrected_sampling_effort)
+
+darvill_test <- diversity %>% 
+  filter(SS == "AD1_2004__Darvill 1") %>% 
+  dplyr::select(Measurement, Effort_corrected_measurement)
+
+darvill_test
+```
+
+###  Merge any sites that are within the same land-use type and that have identical coordinates, start and end dates
+
+```{r}
+diversity <- diversity %>%
+  
+  # group by aspects of the sites that should be identical if we need to merge the abundances
+  # I only want to merge abundances if they are within the same study and block
+  # as I'm assuming that even if the locations and sampling times are the same, if the blocks or studies are different, then there is some good reason for this.
+  group_by(Source_ID, Study_number, Study_name, Block,
+           #diversity metric type
+           Diversity_metric, Diversity_metric_type, Diversity_metric_unit,
+           Diversity_metric_is_effort_sensitive,
+           
+           #details of the sites
+           Predominant_habitat, Use_intensity, Years_since_fragmentation_or_conversion,
+           
+           #details of the sampling method
+           Sampling_method, Sampling_effort_unit,
+           
+           #species identity
+           Study_common_taxon, Rank_of_study_common_taxon,
+           Taxon_number, Taxon_name_entered,
+           Indication, Parsed_name,
+           Best_guess_binomial, COL_ID, Taxon, Name_status,
+           Rank, Kingdom, Phylum, Class, Order, Family, Genus, Species,
+           Higher_taxon,
+           
+           #site location
+           Longitude, Latitude,
+           
+           #sampling time
+           Sample_start_earliest, Sample_end_latest, Sample_date_resolution) %>%
+  
+  # if the diversity metric is occurrence:
+  #   if it is present at all, give it a 1, if it is always absent, give it a 0,
+  # otherwise (if the metric is either abundance or species richness):
+  #   calculate the weighted abundance/richness for each taxonomic group, weighted by sampling effort
+  
+  mutate(merged_diversity = 
+           ifelse(Diversity_metric_type == "Occurrence",
+                  # if any of the occurrence values are 1, `any` will return TRUE. If you sum a logical, TRUE becomes 1 and FALSE becomes 0
+                  sum(any(Effort_corrected_measurement > 0)),
+                  
+                  # note that since we've already corrected the sampling effort, this is essentially a mean rather than a weighted mean for abundance measurements. It's a weighted mean for species richness though where sampling efforts vary.
+                  stats::weighted.mean(x = Effort_corrected_measurement,
+                                       w = Corrected_sampling_effort))
+         )
+
+# pull out the grouping data (so we can double check how many records we're merging for each)
+group_dat <- diversity %>% 
+  group_data() %>%
+  mutate(nvals_merged = lengths(.rows),
+         merge_ID = row_number())
+
+# ungroup the diversity data for future use
+diversity <- ungroup(diversity)
+
+# create a dataset where we can extract just the merged data if we want to
+diversity_merged <- diversity %>%
+  left_join(group_dat)
+```
+
+Check that what we have done has worked - row numbers should be equal right now
+
+```{r}
+nrow(diversity) == nrow(diversity_merged)
+```
+
+More tests to make sure it has worked
+
+```{r}
+test_data <- diversity_merged %>%
+  filter(nvals_merged > 1) %>%
+  distinct(merge_ID, .keep_all = TRUE)
+
+test1 <- diversity_merged %>%
+  filter(merge_ID == test_data$merge_ID[1]) %>%
+  dplyr::select(SS, SSB,
+         Diversity_metric, Diversity_metric_type, Diversity_metric_unit,
+         Predominant_habitat, Use_intensity, Years_since_fragmentation_or_conversion,
+         Sampling_method, Sampling_effort_unit,
+         Study_common_taxon, Rank_of_study_common_taxon,
+         Taxon_name_entered,
+         Best_guess_binomial,
+         Longitude, Latitude,
+         Sample_start_earliest, Sample_end_latest, Sample_date_resolution,
+         Effort_corrected_measurement,
+         Corrected_sampling_effort,
+         merged_diversity,
+         .rows,
+         nvals_merged,
+         merge_ID
+         )
+
+test1
+
+paste(test_data$SS[8000])
+```
+
+```{r}
+test2 <- diversity_merged %>%
+  filter(merge_ID == test_data$merge_ID[8000]) %>%
+  dplyr::select(SS, SSB,
+         Diversity_metric, Diversity_metric_type, Diversity_metric_unit,
+         Predominant_habitat, Use_intensity, Years_since_fragmentation_or_conversion,
+         Sampling_method, Sampling_effort_unit,
+         Study_common_taxon, Rank_of_study_common_taxon,
+         Taxon_name_entered,
+         Best_guess_binomial,
+         Longitude, Latitude,
+         Sample_start_earliest, Sample_end_latest, Sample_date_resolution,
+         Effort_corrected_measurement,
+         Corrected_sampling_effort,
+         merged_diversity,
+         .rows,
+         nvals_merged,
+         merge_ID
+         )
+
+test2
+```
+
+Check studies that didn't need merging
+
+```{r}
+test_data <- diversity_merged %>%
+  filter(nvals_merged == 1) %>%
+  distinct(merge_ID, .keep_all = TRUE)
+
+paste(test_data$SS[1])
+
+
+test3 <- diversity_merged %>%
+  filter(merge_ID == test_data$merge_ID[1]) %>%
+  dplyr::select(SS, SSB,
+         Diversity_metric, Diversity_metric_type, Diversity_metric_unit,
+         Predominant_habitat, Use_intensity, Years_since_fragmentation_or_conversion,
+         Sampling_method, Sampling_effort_unit,
+         Study_common_taxon, Rank_of_study_common_taxon,
+         Taxon_name_entered,
+         Best_guess_binomial,
+         Longitude, Latitude,
+         Sample_start_earliest, Sample_end_latest, Sample_date_resolution,
+         Effort_corrected_measurement,
+         Corrected_sampling_effort,
+         merged_diversity,
+         .rows,
+         nvals_merged,
+         merge_ID
+         ) 
+
+test3
+```
+
+
+```{r}
+
+```
+
