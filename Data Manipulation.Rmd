@@ -24,17 +24,19 @@ library(ggplot2) # for plotting
 library(merTools) # useful for a few things, but we're using it for extracting estimates for plotting
 ```
 
+Clear Global Environment
+
+```{r}
+rm(list=ls())
+```
+
+
 Read in the data 
 
 ```{r}
 diversity <- readRDS("UP-TO-DATE.rds") 
 ```
 
-Create new data frame with just insect data
-
-```{r}
-insects <- droplevels(subset(diversity, Class=="Insecta")) 
-```
 
 ### Correct for sampling effort across sites within a study
 
@@ -259,8 +261,303 @@ test3 <- diversity_merged %>%
 test3
 ```
 
+### Calculate Diversity Metrics 
 
 ```{r}
+sites <- diversity_merged %>%
+  
+  # pull out only the merged diversity data
+  distinct(merge_ID, .keep_all = TRUE) %>%
+  
+  # re-make SSB and SSBS values since we've now dropped a bunch of values
+  mutate(SS = paste(Source_ID, Study_number),
+         SSB = paste(SS, Block),
+         SSBS = paste(SSB, Site_number)) %>%
+  
+  # group by SSBS (each unique value corresponds to a unique site)
+  group_by(SSBS) %>%
+  
+  # now add up all the abundance measurements within each site
+  mutate(TotalAbundance = ifelse(Diversity_metric_type == "Abundance",
+                                 sum(merged_diversity),
+                                 # if the diversity metric type isn't Abundance, then leave the TotalAbundance measurement as NA
+                                 NA),
+         
+         SpeciesRichness = ifelse(Diversity_metric_type == "Species richness",
+                                  merged_diversity,
+                                  # for abundance and occurrence measurements, count the number of unique species names that are present at the site 
+                                  n_distinct(Best_guess_binomial[merged_diversity > 0]))) %>%
+  
+  # ungroup
+  ungroup() %>%
+  
+  # pull out unique sites
+  distinct(SSBS, .keep_all = TRUE) %>%
+  
+  # now group by Study ID
+  group_by(SS) %>%
+  
+  # pull out the maximum abundance for each study
+  mutate(MaxAbundance = max(TotalAbundance)) %>%
+  
+  # ungroup
+  ungroup() %>%
+  
+  # now rescale total abundance, so that within each study, abundance varies from 0 to 1.
+  mutate(RescaledAbundance = TotalAbundance/MaxAbundance) %>%
+  
+  mutate(sqrtRescaledAbundance = sqrt(RescaledAbundance))
+```
+
+### Adding in livestock data 
+
+reading in map
+
+```{r}
+livestock_da <- raster("5_Ct_2010_Da.tif")
+```
+
+Pull out livestock values for my sites 
+
+```{r}
+# get the coordinates from the sites dataset
+point_coords <- dplyr::select(sites, Longitude, Latitude)
+
+# extract the HPD values for these coordinates
+livestock_da_value <- raster::extract(livestock_da, point_coords)
+
+# take a look at the data
+head(livestock_da_value)
+
+# place these data into the sites dataframe, adding a column called hpd and a log-transformed hpd column
+sites <- mutate(sites, 
+                Livestock = livestock_da_value,
+                loglivestock = log(Livestock + 1))
+```
+
+read in pixel area data
+
+```{r}
+pixel_area <- raster("8_Areakm.tif")
+```
+
+Create new column of livestock density
+
+```{r}
+#extract pixel area values for the coordinates
+pixel_area_value <- raster::extract(pixel_area, point_coords)
+
+#create new column in sites dataframe of cattle density (stock per km2)
+sites <- mutate(sites,
+                LivestockDensity = livestock_da_value/pixel_area_value,
+                logLivestockDensity = log(LivestockDensity + 1))
+```
+
+
+### Subsetting the data 
+
+Rename predominant habitat to land use 
+
+```{r}
+sites <- rename(sites,
+                Predominant_land_use = Predominant_habitat)
+```
+
+Subsetting for the following data:
+- Just insect data
+- Dung Beetles and Orthoptera in pasture 
+
+```{r}
+#Subset data frame for insects
+insects <- droplevels(subset(sites, Class == "Insecta")) 
+
+#Subset for orthoptera and Dungbeetles 
+mydata<-droplevels(subset(insects, ( Family == "Scarabaeidae" | Family == "Geotrupidae" | Order == "Orthoptera" ) & Predominant_land_use == "Pasture"))
 
 ```
 
+Need to remove the land use 'Cannot Decide' as I am interested in different intensities 
+
+```{r}
+mydata<-droplevels(subset(mydata, (Use_intensity != "Cannot decide")))
+```
+
+Looking at how many sites there are for each land use intensity for dung beetles and for orthoptera 
+
+```{r}
+table(mydata$Order, mydata$Use_intensity)
+```
+
+
+
+## Modelling Site Level Diversity
+
+### Checking Collinearity Between Explanatory Variables
+
+```{r}
+#install function used for checking collinearity
+source("https://highstat.com/Books/Book2/HighstatLibV10.R")
+
+#check for collinearity between explanatory variables
+corvif(mydata[ , c("Use_intensity", "LivestockDensity", "Order")])
+```
+Collinearity all looks good
+
+### Making sure we have complete cases
+
+```{r}
+#only complete cases for abundance across the explanatory values 
+model_data_ab <- drop_na(mydata, 
+                         RescaledAbundance, logLivestockDensity,
+                         Use_intensity, Order)
+
+#only complete cases for species richness across the explanatory values 
+model_data_sr <- drop_na(mydata, 
+                         SpeciesRichness, logLivestockDensity,
+                         Use_intensity, Order)
+```
+
+### Visualising the data 
+
+```{r}
+#plot a boxplot to see if there seems to be any relationship between use intensity and livestock density
+ggplot(model_data_ab, aes(x = Use_intensity, y = logLivestockDensity, colour = Order)) +
+  geom_boxplot() 
+
+#Plots of how land use intensity impacts abundance and species richness of the different orders 
+ggplot(model_data_ab, aes(x = Use_intensity, y = sqrtRescaledAbundance)) +
+  geom_boxplot() + facet_wrap(~Order)
+
+ggplot(model_data_sr, aes(x = Use_intensity, y = SpeciesRichness)) +
+  geom_boxplot() + facet_wrap(~Order)
+
+#Plots of how livestock density impacts abundance and species richness of the different orders 
+ggplot(model_data_ab, aes(x = logLivestockDensity, y = sqrtRescaledAbundance)) +
+  geom_point() + facet_wrap(~Order)
+
+ggplot(model_data_sr, aes(x = logLivestockDensity, y = SpeciesRichness)) +
+  geom_point() + facet_wrap(~Order)
+```
+
+### Building model
+
+```{r}
+#model looking at abundance
+m1<- lmer(sqrtRescaledAbundance ~ Use_intensity * Order + logLivestockDensity * Order + (1 | SS) + (1 | SSB), data = model_data_ab)
+
+summary(m1)
+
+#model looking at species richness
+m2 <- glmer(SpeciesRichness ~ Use_intensity * Order + logLivestockDensity * Order + (1 | SS) + (1 | SSB), data = model_data_sr, family = "poisson")
+
+summary(m2)
+```
+
+### now doing model with all orders of insects 
+
+Need to remove the land use 'Cannot Decide' as I am interested in different intensities 
+
+```{r}
+all_insects<-droplevels(subset(insects, (Use_intensity != "Cannot decide")))
+
+all_insects<- droplevels(subset(insects, (Order != "")))
+```
+
+Looking at how many sites there are for each land use intensity for each order
+
+```{r}
+table(all_insects$Order, all_insects$Use_intensity)
+```
+
+Collapse insect orders where there isn't much data into a 'other insects' group
+
+```{r}
+all_insects <- all_insects %>%
+  
+  mutate(
+    
+    # collapse Blattodea, Dermaptera, Diptera, Isoptera, Odonata and Thysanoptera as these aren't well distinguished
+    Order = recode_factor(Order, "Blattodea" = "Other Insects", "Dermaptera" = "Other Insects",
+                          "Diptera" = "Other Insects", "Isoptera" = "Other Insects",
+                          "Odonata" = "Other Insects", "Thysanoptera" = "Other Insects"))
+```
+
+Looking again at how many sites there are now
+
+```{r}
+table(all_insects$Order, all_insects$Use_intensity)
+```
+
+Making sure we have complete cases
+
+```{r}
+#only complete cases for abundance across the explanatory values 
+model_data_ab_b <- drop_na(all_insects, 
+                         sqrtRescaledAbundance, logLivestockDensity,
+                         Use_intensity, Order)
+
+#only complete cases for species richness across the explanatory values 
+model_data_sr_b <- drop_na(all_insects, 
+                         SpeciesRichness, logLivestockDensity,
+                         Use_intensity, Order)
+```
+
+Visualise the data 
+
+```{r}
+#plot a boxplot to see if there seems to be any relationship between use intensity and livestock density
+ggplot(model_data_ab_b, aes(x = Use_intensity, y = logLivestockDensity)) +
+  geom_boxplot() + facet_wrap(~Region)
+
+#Plots of how land use intensity impacts abundance and species richness of the different orders 
+ggplot(model_data_ab_b, aes(x = Use_intensity, y = sqrtRescaledAbundance)) +
+  geom_boxplot()+ facet_wrap(~Region)
+
+ggplot(model_data_sr_b, aes(x = Use_intensity, y = SpeciesRichness)) +
+  geom_boxplot() + facet_wrap(~Order)
+
+#Plots of how livestock density impacts abundance and species richness of the different orders 
+ggplot(model_data_ab_b, aes(x = logLivestockDensity, y = sqrtRescaledAbundance)) +
+  geom_point() + facet_wrap(~Order)
+
+ggplot(model_data_sr_b, aes(x = logLivestockDensity, y = SpeciesRichness)) +
+  geom_point() + facet_wrap(~Order)
+```
+
+Build model
+
+```{r}
+#model looking at abundance
+m1b<- lmer(sqrtRescaledAbundance ~ Use_intensity * Order + logLivestockDensity * Order + (1 | SS) + (1 | SSB), (1 | Region), data = model_data_ab_b)
+
+summary(m1)
+ #second model here crashes my computer
+```
+
+
+### model of how land use change in savannas impacts the two 
+
+Subset the data for dung beetles and orthoptera in savannas 
+```{r}
+#Subset data frame for insects
+insects <- droplevels(subset(sites, Class == "Insecta")) 
+
+#Subset for orthoptera and Dungbeetles in savannas
+
+mydata_db <- droplevels(subset(insects, Family == "Scarabaeidae" | Family == "Geotrupidae" | Order == "Orthoptera"))
+
+mydata_db <- droplevels(subset(mydata_db, Biome == "Tropical & Subtropical Grasslands, Savannas & Shrublands" | Biome == "Flooded Grasslands & Savannas" | Biome == "Temperate Grasslands, Savannas & Shrublands" | Biome == "Montane Grasslands & Shrublands"))
+
+```
+
+Need to remove the land use 'Cannot Decide' as I am interested in different intensities 
+
+```{r}
+mydata_b<-droplevels(subset(mydata_b, (Use_intensity != "Cannot decide")))
+```
+
+Looking at how many sites there are for each land use intensity for dung beetles and for orthoptera 
+
+```{r}
+table(mydata_db$Order, mydata_db$Predominant_land_use)
+```
