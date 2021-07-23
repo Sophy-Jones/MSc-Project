@@ -354,7 +354,7 @@ sites <- mutate(sites,
 ```
 
 
-### Subsetting the data 
+### Creating data set of dung beetles and orthoptera in pasture 
 
 Rename predominant habitat to land use 
 
@@ -382,85 +382,30 @@ Need to remove the land use 'Cannot Decide' as I am interested in different inte
 mydata<-droplevels(subset(mydata, (Use_intensity != "Cannot decide")))
 ```
 
-Looking at how many sites there are for each land use intensity for dung beetles and for orthoptera 
+Looking at how many sites there are 
 
 ```{r}
 table(mydata$Order, mydata$Use_intensity)
+table(mydata$Order, mydata$Region)
+table(mydata$Order, mydata$Use_intensity, mydata$Region)
 ```
-
-
-
-## Modelling Site Level Diversity
-
-### Checking Collinearity Between Explanatory Variables
+Exporting data for analysis purposes
 
 ```{r}
-#install function used for checking collinearity
-source("https://highstat.com/Books/Book2/HighstatLibV10.R")
-
-#check for collinearity between explanatory variables
-corvif(mydata[ , c("Use_intensity", "LivestockDensity", "Order")])
-```
-Collinearity all looks good
-
-### Making sure we have complete cases
-
-```{r}
-#only complete cases for abundance across the explanatory values 
-model_data_ab <- drop_na(mydata, 
-                         RescaledAbundance, logLivestockDensity,
-                         Use_intensity, Order)
-
-#only complete cases for species richness across the explanatory values 
-model_data_sr <- drop_na(mydata, 
-                         SpeciesRichness, logLivestockDensity,
-                         Use_intensity, Order)
+write.csv(mydata,"~/Documents/MSc-Project/MSc-Project\\mydata.csv", row.names = FALSE)
 ```
 
-### Visualising the data 
-
-```{r}
-#plot a boxplot to see if there seems to be any relationship between use intensity and livestock density
-ggplot(model_data_ab, aes(x = Use_intensity, y = logLivestockDensity, colour = Order)) +
-  geom_boxplot() 
-
-#Plots of how land use intensity impacts abundance and species richness of the different orders 
-ggplot(model_data_ab, aes(x = Use_intensity, y = sqrtRescaledAbundance)) +
-  geom_boxplot() + facet_wrap(~Order)
-
-ggplot(model_data_sr, aes(x = Use_intensity, y = SpeciesRichness)) +
-  geom_boxplot() + facet_wrap(~Order)
-
-#Plots of how livestock density impacts abundance and species richness of the different orders 
-ggplot(model_data_ab, aes(x = logLivestockDensity, y = sqrtRescaledAbundance)) +
-  geom_point() + facet_wrap(~Order)
-
-ggplot(model_data_sr, aes(x = logLivestockDensity, y = SpeciesRichness)) +
-  geom_point() + facet_wrap(~Order)
-```
-
-### Building model
-
-```{r}
-#model looking at abundance
-m1<- lmer(sqrtRescaledAbundance ~ Use_intensity * Order + logLivestockDensity * Order + (1 | SS) + (1 | SSB), data = model_data_ab)
-
-summary(m1)
-
-#model looking at species richness
-m2 <- glmer(SpeciesRichness ~ Use_intensity * Order + logLivestockDensity * Order + (1 | SS) + (1 | SSB), data = model_data_sr, family = "poisson")
-
-summary(m2)
-```
-
-### now doing model with all orders of insects 
+### creating dataset for analysis with all orders of insects in pasture 
 
 Need to remove the land use 'Cannot Decide' as I am interested in different intensities 
+Also need to remove any orders which are unclassified 
 
 ```{r}
 all_insects<-droplevels(subset(insects, (Use_intensity != "Cannot decide")))
 
-all_insects<- droplevels(subset(insects, (Order != "")))
+all_insects<- droplevels(subset(all_insects, (Order != "")))
+
+all_insects <- droplevels(subset(all_insects, (Predominant_land_use == "Pasture")))
 ```
 
 Looking at how many sites there are for each land use intensity for each order
@@ -476,66 +421,34 @@ all_insects <- all_insects %>%
   
   mutate(
     
-    # collapse Blattodea, Dermaptera, Diptera, Isoptera, Odonata and Thysanoptera as these aren't well distinguished
-    Order = recode_factor(Order, "Blattodea" = "Other Insects", "Dermaptera" = "Other Insects",
-                          "Diptera" = "Other Insects", "Isoptera" = "Other Insects",
-                          "Odonata" = "Other Insects", "Thysanoptera" = "Other Insects"))
+    # collapse Diptera, Isoptera, Odonata as these aren't well distinguished
+    Order = recode_factor(Order, "Diptera" = "Other Insects", "Isoptera" = "Other Insects",
+                          "Odonata" = "Other Insects"))
 ```
 
 Looking again at how many sites there are now
 
 ```{r}
 table(all_insects$Order, all_insects$Use_intensity)
+
+#check how many sites there are for dung beetles compared to the rest of the beetles
+#first subset dataset for coleoptera 
+coleoptera <- droplevels(subset(all_insects, (Order == 'Coleoptera')))
+
+#now put in table and look at families - Scarabaeidae
+table(coleoptera$Family, coleoptera$Use_intensity)
 ```
 
-Making sure we have complete cases
+Exporting data for analysis purposes
 
 ```{r}
-#only complete cases for abundance across the explanatory values 
-model_data_ab_b <- drop_na(all_insects, 
-                         sqrtRescaledAbundance, logLivestockDensity,
-                         Use_intensity, Order)
-
-#only complete cases for species richness across the explanatory values 
-model_data_sr_b <- drop_na(all_insects, 
-                         SpeciesRichness, logLivestockDensity,
-                         Use_intensity, Order)
-```
-
-Visualise the data 
-
-```{r}
-#plot a boxplot to see if there seems to be any relationship between use intensity and livestock density
-ggplot(model_data_ab_b, aes(x = Use_intensity, y = logLivestockDensity)) +
-  geom_boxplot() + facet_wrap(~Region)
-
-#Plots of how land use intensity impacts abundance and species richness of the different orders 
-ggplot(model_data_ab_b, aes(x = Use_intensity, y = sqrtRescaledAbundance)) +
-  geom_boxplot()+ facet_wrap(~Region)
-
-ggplot(model_data_sr_b, aes(x = Use_intensity, y = SpeciesRichness)) +
-  geom_boxplot() + facet_wrap(~Order)
-
-#Plots of how livestock density impacts abundance and species richness of the different orders 
-ggplot(model_data_ab_b, aes(x = logLivestockDensity, y = sqrtRescaledAbundance)) +
-  geom_point() + facet_wrap(~Order)
-
-ggplot(model_data_sr_b, aes(x = logLivestockDensity, y = SpeciesRichness)) +
-  geom_point() + facet_wrap(~Order)
-```
-
-Build model
-
-```{r}
-#model looking at abundance
-m1b<- lmer(sqrtRescaledAbundance ~ Use_intensity * Order + logLivestockDensity * Order + (1 | SS) + (1 | SSB), (1 | Region), data = model_data_ab_b)
-
-summary(m1)
- #second model here crashes my computer
+write.csv(all_insects,"~/Documents/MSc-Project/MSc-Project\\all_insects.csv", row.names = FALSE)
 ```
 
 
-### model of how land use change in savannas impacts the two 
+
+
+### creating data set of dung beetles and orthoptera in savannas 
 
 Subset the data for dung beetles and orthoptera in savannas 
 ```{r}
@@ -543,21 +456,139 @@ Subset the data for dung beetles and orthoptera in savannas
 insects <- droplevels(subset(sites, Class == "Insecta")) 
 
 #Subset for orthoptera and Dungbeetles in savannas
+savannas <- droplevels(subset(insects, Family == "Scarabaeidae" | Family == "Geotrupidae" | Order == "Orthoptera"))
 
-mydata_db <- droplevels(subset(insects, Family == "Scarabaeidae" | Family == "Geotrupidae" | Order == "Orthoptera"))
-
-mydata_db <- droplevels(subset(mydata_db, Biome == "Tropical & Subtropical Grasslands, Savannas & Shrublands" | Biome == "Flooded Grasslands & Savannas" | Biome == "Temperate Grasslands, Savannas & Shrublands" | Biome == "Montane Grasslands & Shrublands"))
+savannas <- droplevels(subset(savannas, Biome == "Tropical & Subtropical Grasslands, Savannas & Shrublands" | Biome == "Flooded Grasslands & Savannas" | Biome == "Temperate Grasslands, Savannas & Shrublands" | Biome == "Montane Grasslands & Shrublands"))
 
 ```
 
-Need to remove the land use 'Cannot Decide' as I am interested in different intensities 
+
+Looking at how many sites there are for each land use for dung beetles and for orthoptera 
 
 ```{r}
-mydata_b<-droplevels(subset(mydata_b, (Use_intensity != "Cannot decide")))
+table(savannas$Order, savannas$Predominant_land_use)
 ```
 
-Looking at how many sites there are for each land use intensity for dung beetles and for orthoptera 
+Need to collapse some of the land uses
 
 ```{r}
-table(mydata_db$Order, mydata_db$Predominant_land_use)
+savannas <- savannas %>%
+  
+  mutate(
+    
+    # collapse primary forest and non-forest together into primary vegetation as these aren't well distinguished
+    Predominant_land_use = recode_factor(Predominant_land_use, 
+                                  "Primary forest" = "Primary", 
+                                  "Primary non-forest" = "Primary"))
+
+savannas <- savannas %>%
+  
+  mutate(
+    
+    #collapse all secondary vegetation
+    Predominant_land_use = recode_factor(Predominant_land_use,
+                                         "Young secondary vegetation" = "Secondary vegetation",
+                                         "Intermediate secondary vegetation" = "Secondary vegetation",
+                                         "Mature secondary vegetation" = "Secondary vegetation",
+                                         "Secondary vegetation (indeterminate age)" = "Secondary vegetation"))
 ```
+
+Check that worked and look at new site totals
+
+```{r}
+table(savannas$Order, savannas$Predominant_land_use)
+
+table(savannas$Order, savannas$Predominant_land_use, savannas$Use_intensity)
+```
+
+Exporting data for analysis purposes
+
+```{r}
+write.csv(savannas,"~/Documents/MSc-Project/MSc-Project\\savannas.csv", row.names = FALSE)
+```
+
+### creating a dataset of all insects in savannas 
+
+```{r}
+all_insects_savannas<-droplevels(subset(insects, (Use_intensity != "Cannot decide")))
+
+all_insects_savannas<- droplevels(subset(all_insects_savannas, (Order != "")))
+
+all_insects_savannas <- droplevels(subset(all_insects_savannas, (Biome == "Tropical & Subtropical Grasslands, Savannas & Shrublands" | Biome == "Flooded Grasslands & Savannas" | Biome == "Temperate Grasslands, Savannas & Shrublands" | Biome == "Montane Grasslands & Shrublands")))
+```
+
+having a look at how many sites i have
+
+```{r}
+table(all_insects_savannas$Predominant_land_use)
+
+table(all_insects_savannas$Order)
+
+table(all_insects_savannas$Order, all_insects_savannas$Predominant_land_use)
+
+table(all_insects_savannas$Order, all_insects_savannas$Predominant_land_use, all_insects_savannas$Use_intensity)
+```
+
+Collapse insect orders where there isn't much data into a 'other insects' group
+
+```{r}
+all_insects_savannas <- all_insects_savannas %>%
+  
+  mutate(
+    
+    # collapse Blattodea, Diptera, Isoptera and dermaptera as these aren't well distinguished
+    Order = recode_factor(Order, "Diptera" = "Other Insects", "Isoptera" = "Other Insects",
+                          "Blattodea" = "Other Insects", "Dermaptera" = "Other Insects"))
+```
+
+Look at the sites again
+```{r}
+table(all_insects_savannas$Predominant_land_use)
+
+table(all_insects_savannas$Order)
+
+table(all_insects_savannas$Order, all_insects_savannas$Predominant_land_use)
+
+table(all_insects_savannas$Order, all_insects_savannas$Predominant_land_use, all_insects_savannas$Use_intensity)
+```
+not sure whether the secondary vegetation needs to be collapsed or not - will collapse for now 
+
+```{r}
+all_insects_savannas <- all_insects_savannas %>%
+  
+  mutate(
+    
+    # collapse primary forest and non-forest together into primary vegetation as these aren't well distinguished
+    Predominant_land_use = recode_factor(Predominant_land_use, 
+                                  "Primary forest" = "Primary", 
+                                  "Primary non-forest" = "Primary"))
+
+all_insects_savannas <- all_insects_savannas %>%
+  
+  mutate(
+    
+    #collapse all secondary vegetation
+    Predominant_land_use = recode_factor(Predominant_land_use,
+                                         "Young secondary vegetation" = "Secondary vegetation",
+                                         "Intermediate secondary vegetation" = "Secondary vegetation",
+                                         "Mature secondary vegetation" = "Secondary vegetation",
+                                         "Secondary vegetation (indeterminate age)" = "Secondary vegetation"))
+```
+
+Look at number of sites again
+```{r}
+table(all_insects_savannas$Predominant_land_use)
+
+table(all_insects_savannas$Order)
+
+table(all_insects_savannas$Order, all_insects_savannas$Predominant_land_use)
+
+table(all_insects_savannas$Order, all_insects_savannas$Predominant_land_use, all_insects_savannas$Use_intensity)
+```
+
+export data to be used in analysis 
+
+```{r}
+write.csv(all_insects_savannas,"~/Documents/MSc-Project/MSc-Project\\all_insects_savannas.csv", row.names = FALSE)
+```
+
